@@ -5,3 +5,8 @@ pycaret
 redis
 tensorflow
 wheel
+surrealdb
+fireworks-ai
+langchain
+langchain-community
+langchain_fireworks
