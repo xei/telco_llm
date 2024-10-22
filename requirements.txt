@@ -6,7 +6,9 @@ redis
 tensorflow
 wheel
 surrealdb
+weaviate-client
 fireworks-ai
 langchain
 langchain-community
 langchain_fireworks
+langchain_weaviate

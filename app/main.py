@@ -1,80 +1,42 @@
-# from contextlib import asynccontextmanager
-
-# from fastapi import FastAPI
-
-# from clients import redis
-# from models.recommendation import get_retrieval_model
-# from routers.home import router as home_router
-# from routers.travel_time import router as travel_time_router
-# from routers.recommendation import router as recommendation_router
-# from routers.healthz import router as healthz_router
-
 import uuid
 from typing import List
- 
-# FastAPI
-from fastapi import FastAPI
-from pydantic import BaseModel
- 
-## Streaming Response utility
-from fastapi.responses import StreamingResponse
- 
-## Enable CORS utility
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
- 
+import weaviate
+from langchain_community.vectorstores import Weaviate
+import os
+
 # Fireworks SDK
 import fireworks.client
-import os
 fireworks.client.api_key = os.environ["FIREWORKS_API_KEY"]
- 
-# SurrealDB Vector Store SDK for LangChain
-from langchain_community.vectorstores import SurrealDBStore
- 
+
 # Fireworks Embeddings Integration via LangChain
 from langchain_fireworks import FireworksEmbeddings
-# Load the nomic-embed-text-v1.5 embedding models via Langchain Fireworks Integration
+
+# https://python.langchain.com/docs/integrations/text_embedding/fireworks/
 embeddings = FireworksEmbeddings(model="nomic-ai/nomic-embed-text-v1.5",
                                  fireworks_api_key=os.getenv("FIREWORKS_API_KEY"))
 
+# https://api.python.langchain.com/en/latest/vectorstores/langchain_community.vectorstores.weaviate.Weaviate.html
+# https://python.langchain.com/docs/integrations/vectorstores/weaviate/
+client = weaviate.Client(url="http://weaviate:8080")
+index_name = "Alarm"
+text_key = "content"
+weaviate = Weaviate(client, index_name, text_key, embeddings)
 
-dburl = "ws://localhost:4304/rpc"
-db_user = "root"
-db_pass = "root"
-vector_collection = "vectors" # the collection name of the vector store to and from which the relevant vectors will be inserted and queried from
+class LearningMessages(BaseModel):
+    alarms: str
 
-vector_db = SurrealDBStore(dburl=dburl,
-                           db_user=db_user,
-                           db_pass=db_pass,
-                           collection=vector_collection,
-                           embedding_function=embeddings)
+class Message(BaseModel):
+    role: str
+    content: str
 
+class Messages(BaseModel):
+    messages: List[Message]
 
-
-
-# @asynccontextmanager
-# async def lifespan(app: FastAPI):
-#     print("Application Startup!")
-#     # Load the ML models
-#     await get_retrieval_model()
-#     # model_loading_output = await load_retrieval_model()
-#     # print(f"Retrieval Model Loaded in {model_loading_output['execution_time_ms']:.2f} ms")
-#     # and establish database connections
-#     redis.get_redis_client()
-#     #ml_models["model1"] = models.model1.load()
-#     #redis_repo.get_instance()
-#     yield
-#     # Clean up the ML models,
-#     # release the resources
-#     # and close the connections
-#     #ml_models.clear()
-#     #redis_repo.close()
-#     print("Application shutdown!")
-
-
-# app = FastAPI(title="Telco LLM", lifespan=lifespan)
 app = FastAPI(title="Telco LLM")
 
-# Add CORS middleware, allows your frontend to successfully POST to the RAG application endpoints to fetch responses to the user query, regardless of the port it is running on.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -83,47 +45,44 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# app.include_router(home_router)
-# app.include_router(travel_time_router)
-# app.include_router(recommendation_router)
-# app.include_router(healthz_router)
-
-
-# @app.middleware("http")
-# async def log_requests(request, call_next):
-#     # Log the incoming request
-#     print(f"Incoming Request: {request.method} {request.url}")
-#
-#     # Proceed with handling the request
-#     response = await call_next(request)
-#
-#     # Log the outgoing response
-#     print(f"Outgoing Response: {response.status_code}")
-#
-#     return response
+class AddNewAlarmRequestPayload(BaseModel):
+    alarm: str = Field(
+        description="Alarm Details",
+        example="024-08-28 14:59:19	Major	1060027454	User Plane Fault	Communication Alarm	Service Type=X2 LINK_FAILURE Communication Alarm	CLUSTER 1	G4023	Service Type=X2	MKTG4023HUB3001	HUAWEI	5G"
+    )
+    remedy: str = Field(
+        description="Remedy",
+        example="Step1: ..., Step2: ..."
+    )
 
 
-# Class representing the string of messages to be searched and embedded as system context.
-class LearningMessages(BaseModel):
-    alarms: str
- 
-# Class representing a single message of the conversation between RAG application and user.
-class Message(BaseModel):
-    role: str
-    content: str
- 
-# Class representing collection of messages above.
-class Messages(BaseModel):
-    messages: List[Message]
+@app.post("/add_new_alarm")
+async def add_new_alarm(request_payload: AddNewAlarmRequestPayload):
+    try:
+        # Split the alarms and create metadata
+        messages_json = request_payload.alarm.split(',')
+        metadatas = [{"len": len(t), "remedy": request_payload.remedy, "original_alarm": request_payload.alarm} for t in messages_json]
+        ids = [str(uuid.uuid4()) for _ in messages_json]
 
+        # Add texts to Weaviate
+        await weaviate.aadd_texts(messages_json, metadatas=metadatas, ids=ids)
+        
+        # Optionally return a success response
+        return {"message": "Update successful", "ids": ids}
 
-@app.post('/add-new-alarms')
-async def add_new_alarms(messages: LearningMessages): # Accepts a single string as messages containing comma (,) separated messages to be inserted in your SurrealDB vector store.
-    messages_json = messages.model_dump()["alarms"].split(',')
-    # Initialize SurrealDB
-    await vector_db.initialize()
-    # Create texts to be inserted into the Vector Store (Embeddings are generated automatically)
-    metadatas = [{"len": len(t), "remedy": "REMEDY!"} for t in messages_json]
-    ids = [str(uuid.uuid4()) for _ in messages_json]
-    await vector_db.aadd_texts(messages_json, metadatas=metadatas, ids=ids)
+    except Exception as e:
+        # Log the exception (optional)
+        print(f"Error updating messages: {e}")
+
+        # Raise an HTTP exception with a 500 status code
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/retrieve")
+async def retrieve_relevant_alarms(query: str):
+    try:
+        query_vector = embeddings.embed_query(query)
+        relevant_content = await weaviate.asimilarity_search_by_vector(query_vector, 2)
+       # relevant_content = await weaviate.asimilarity_search(query)
+        return relevant_content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
