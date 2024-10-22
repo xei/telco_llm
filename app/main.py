@@ -61,7 +61,7 @@ async def add_new_alarm(request_payload: AddNewAlarmRequestPayload):
     try:
         # Split the alarms and create metadata
         messages_json = request_payload.alarm.split(',')
-        metadatas = [{"len": len(t), "remedy": request_payload.remedy, "original_alarm": request_payload.alarm} for t in messages_json]
+        metadatas = [{"len": len(t), "remedy": request_payload.remedy, "content": request_payload.alarm} for t in messages_json]
         ids = [str(uuid.uuid4()) for _ in messages_json]
 
         # Add texts to Weaviate
